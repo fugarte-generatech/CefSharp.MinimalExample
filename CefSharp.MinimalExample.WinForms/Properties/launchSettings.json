@@ -1,0 +1,7 @@
+{
+  "profiles": {
+    "CefSharp.MinimalExample.WinForms.netcore": {
+      "commandName": "Project"
+    }
+  }
+}

@@ -39,7 +39,12 @@ namespace CefSharp.MinimalExample.WinForms
             //For screen sharing add (see https://bitbucket.org/chromiumembedded/cef/issues/2582/allow-run-time-handling-of-media-access#comment-58677180)
             settings.CefCommandLineArgs.Add("enable-usermedia-screen-capturing");
 
-            settings.CefCommandLineArgs.Add("disable-features", "OptimizationGuideOnDeviceModel");
+            settings.CefCommandLineArgs.Add("disable-features", "OptimizationGuideOnDeviceModel TranslateUI");
+
+            // Aqui ya es customizado
+            settings.CefCommandLineArgs.Add("disable-pinch", "1");
+            settings.CefCommandLineArgs.Add("overscroll-history-navigation", "0");
+
             //--
 
             //Perform dependency check to make sure all relevant resources are in our output directory.
@@ -67,4 +72,5 @@ namespace CefSharp.MinimalExample.WinForms
             return 0;
         }
     }
+
 }

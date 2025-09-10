@@ -2,10 +2,13 @@
 //
 // Use of this source code is governed by a BSD-style license that can be found in the LICENSE file.
 
+using CefSharp;
 using CefSharp.DevTools.IO;
 using CefSharp.MinimalExample.WinForms.Controls;
 using CefSharp.WinForms;
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net;
 using System.Windows.Forms;
 
@@ -13,6 +16,9 @@ namespace CefSharp.MinimalExample.WinForms
 {
     public partial class BrowserForm : Form
     {
+        
+        private bool _allowClose = false; // solo true cuando uses tu clave secreta
+
 #if DEBUG
         private const string Build = "Debug";
 #else
@@ -25,10 +31,36 @@ namespace CefSharp.MinimalExample.WinForms
         {
             InitializeComponent();
 
-            Text = title;
+            FormBorderStyle = FormBorderStyle.None;
             WindowState = FormWindowState.Maximized;
+            TopMost = true;
+            KeyPreview = true;
 
-            browser = new ChromiumWebBrowser("www.google.com");
+            Text = title;
+
+            // evita cierres "normales" (X, Alt+F4 transformado, etc.)
+            this.FormClosing += (s, e) =>
+            {
+                if (!_allowClose)
+                {
+                    e.Cancel = true;
+                }
+            };
+
+            browser = new ChromiumWebBrowser("portalbac.baccredomatic.com");
+
+            // Handlers clave
+            browser.KeyboardHandler = new KioskKeyboardHandler(
+                exitAction: () => SafeExit(),
+                f6Action: () => BeginInvoke(new Action(OnF6))
+            );
+            browser.MenuHandler = new NoMenuHandler();
+            browser.LifeSpanHandler = new SingleHostLifeSpanHandler();
+            browser.RequestHandler = new KioskRequestHandler(new[]
+            {
+                "portalbac.baccredomatic.com",           // <-- pon tus hosts permitidos aquí
+            });
+
             toolStripContainer.ContentPanel.Controls.Add(browser);
 
             browser.IsBrowserInitializedChanged += OnIsBrowserInitializedChanged;
@@ -54,6 +86,54 @@ namespace CefSharp.MinimalExample.WinForms
 #endif
 
             DisplayOutput(string.Format("{0}, {1}", version, environment));
+        }
+
+        // Mata el SC_CLOSE que manda Alt+F4 (y otros cierres del sistema)
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_SYSCOMMAND = 0x0112;
+            const int SC_CLOSE = 0xF060;
+
+            if (m.Msg == WM_SYSCOMMAND && ((int)m.WParam & 0xFFF0) == SC_CLOSE)
+            {
+                // Ignorar el cierre si no has autorizado salir
+                if (!_allowClose) return;
+            }
+
+            base.WndProc(ref m);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.F6)
+            {
+                OnF6();              // <-- Tu acción de F6
+                return true;         // Consumimos la tecla aquí
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void OnF6()
+        {
+            // Ejemplo A: recargar forzando cache limpio
+            browser.Reload(ignoreCache: true);
+            MessageBox.Show("F6: recarga forzando cache limpio");
+
+            // Ejemplo B (alternativo): ir a una URL de mantenimiento
+            // browser.Load("https://mi-panel-interno.local");
+
+            // Ejemplo C (alternativo): abrir un diálogo admin (PIN) y mostrar opciones
+            // using (var dlg = new AdminDialog()) dlg.ShowDialog(this);
+        }
+
+        private bool SafeExit()
+        {
+            _allowClose = true;     // autoriza cerrar
+            if (InvokeRequired)
+                BeginInvoke(new Action(Close));
+            else
+                Close();
+            return true;
         }
 
         private void OnBrowserLoadError(object sender, LoadErrorEventArgs e)
@@ -111,7 +191,7 @@ namespace CefSharp.MinimalExample.WinForms
 
         private void SetCanGoBack(bool canGoBack)
         {
-            this.InvokeOnUiThreadIfRequired(() => backButton.Enabled = canGoBack);
+            this.InvokeOnUiThreadIfRequired(action: () => backButton.Enabled = canGoBack);
         }
 
         private void SetCanGoForward(bool canGoForward)
@@ -267,5 +347,149 @@ namespace CefSharp.MinimalExample.WinForms
         {
             browser.ShowDevTools();
         }
+
+        private void BrowserForm_Load(object sender, EventArgs e)
+        {
+
+        }
     }
+
+    /// <summary>
+    /// Bloquea atajos típicos (Alt+F4, Ctrl+N/T/W, F11, Ctrl+Shift+I)
+    /// y ofrece una "clave" para salir: Ctrl+Shift+S
+    /// </summary>
+    public class KioskKeyboardHandler : IKeyboardHandler
+    {
+        private readonly Func<bool> exitAction;
+        private readonly Action f6Action;   // ← añade esta acción
+
+        public KioskKeyboardHandler(Func<bool> exitAction, Action f6Action = null) { 
+            this.exitAction = exitAction; 
+            this.f6Action = f6Action;
+        }
+
+        public bool OnPreKeyEvent(IWebBrowser browser, IBrowser ibrowser, KeyType type,
+                                  int windowsKeyCode, int nativeKeyCode,
+                                  CefEventFlags modifiers, bool isSystemKey,
+                                  ref bool isKeyboardShortcut)
+        {
+            if (type != KeyType.KeyDown && type != KeyType.RawKeyDown) return false;
+
+            bool ctrl = modifiers.HasFlag(CefEventFlags.ControlDown);
+            bool alt = modifiers.HasFlag(CefEventFlags.AltDown);
+            bool shift = modifiers.HasFlag(CefEventFlags.ShiftDown);
+
+            // Bloquear combinaciones típicas de escape
+            if ((alt && windowsKeyCode == (int)Keys.F4) ||                          // Alt+F4
+                (ctrl && (windowsKeyCode == (int)Keys.N ||                          // Ctrl+N
+                          windowsKeyCode == (int)Keys.T ||                          // Ctrl+T
+                          windowsKeyCode == (int)Keys.W)) ||                        // Ctrl+W
+                (windowsKeyCode == (int)Keys.F11) ||                                // F11 (full-screen)
+                (ctrl && shift && windowsKeyCode == (int)Keys.I))                   // Ctrl+Shift+I (DevTools)
+            {
+                return true; // Consumir
+            }
+
+            // "Clave" para salir: Ctrl+Shift+S (cámbiala por un PIN si quieres)
+            if (ctrl && shift && windowsKeyCode == (int)Keys.S)
+            {
+                return exitAction?.Invoke() ?? true;
+            }
+
+            // ✅ F6 aquí
+            if (windowsKeyCode == (int)Keys.F6)
+            {
+                // Ejecuta en hilo de UI si hace falta
+                if (f6Action != null)
+                {
+                    try { f6Action(); } catch { /* log opcional */ }
+                }
+                return true; // consumimos F6
+            }
+
+            return false; // No consumido
+        }
+
+        public bool OnKeyEvent(IWebBrowser browserControl, IBrowser browser, KeyType type,
+                               int windowsKeyCode, int nativeKeyCode,
+                               CefEventFlags modifiers, bool isSystemKey) => false;
+    }
+
+    /// <summary>Quita el menú contextual (clic derecho).</summary>
+    public class NoMenuHandler : IContextMenuHandler
+    {
+        public void OnBeforeContextMenu(IWebBrowser c, IBrowser b, IFrame f, IContextMenuParams p, IMenuModel m) => m.Clear();
+        public bool OnContextMenuCommand(IWebBrowser c, IBrowser b, IFrame f, IContextMenuParams p, CefMenuCommand cmd, CefEventFlags e) => false;
+        public void OnContextMenuDismissed(IWebBrowser c, IBrowser b, IFrame f) { }
+        public bool RunContextMenu(IWebBrowser c, IBrowser b, IFrame f, IContextMenuParams p, IMenuModel m, IRunContextMenuCallback cb) => false;
+    }
+
+    /// <summary>Evita que se abran nuevas ventanas/pestañas: todo va en la misma.</summary>
+    public class SingleHostLifeSpanHandler : ILifeSpanHandler
+    {
+        public bool DoClose(IWebBrowser chromiumWebBrowser, IBrowser browser) => false;
+        public void OnAfterCreated(IWebBrowser chromiumWebBrowser, IBrowser browser) { }
+        public void OnBeforeClose(IWebBrowser chromiumWebBrowser, IBrowser browser) { }
+
+        public bool OnBeforePopup(IWebBrowser c, IBrowser b, IFrame f,
+            string targetUrl, string targetFrameName,
+            WindowOpenDisposition disposition, bool userGesture,
+            IPopupFeatures features, IWindowInfo windowInfo,
+            IBrowserSettings settings, ref bool noJavascriptAccess,
+            out IWebBrowser newBrowser)
+        {
+            newBrowser = null;
+            c.Load(targetUrl); // redirige el popup a la misma vista
+            return true;       // cancela la creación de nueva ventana
+        }
+    }
+
+    /// <summary>Whitelist de hosts permitidos; bloquea el resto.</summary>
+    public class KioskRequestHandler : CefSharp.Handler.RequestHandler
+    {
+        private readonly HashSet<string> allowedHosts;
+
+        public KioskRequestHandler(IEnumerable<string> hosts)
+        {
+            allowedHosts = new HashSet<string>(hosts ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        }
+
+        protected override bool OnBeforeBrowse(IWebBrowser c, IBrowser b, IFrame f, IRequest r, bool userGesture, bool isRedirect)
+        {
+            try
+            {
+                var uri = new Uri(r.Url);
+                if (allowedHosts.Count > 0 && !allowedHosts.Contains(uri.Host))
+                    return true; // cancelar navegación
+            }
+            catch
+            {
+                return true; // URL inválida => bloquear
+            }
+            return false; // permitir
+        }
+    }
+
+    /// <summary>Helpers opcionales para reiniciar/apagar Windows.</summary>
+    public static class SystemActions
+    {
+        public static void RebootNow()
+        {
+            Process.Start(new ProcessStartInfo("shutdown", "/r /t 0")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+        }
+
+        public static void PowerOffNow()
+        {
+            Process.Start(new ProcessStartInfo("shutdown", "/s /t 0")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false
+            });
+        }
+    }
+
 }
